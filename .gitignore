@@ -3,8 +3,8 @@
 3.png
 __pycache__/
 dataset_ooh/
-yolo_m_123/
-yolo_s_123/
-yolo8m-worlddv2.pt
-yolo8s-worlddv2.pt
+yolo8_m_123/
+yolo8_s_123/
+yolo8m-worldv2.pt
+yolo8s-worldv2.pt
 .DS_Store
