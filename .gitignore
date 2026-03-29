@@ -1,0 +1,10 @@
+1.png
+2.png
+3.png
+__pycache__/
+dataset_ooh/
+yolo_m_123/
+yolo_s_123/
+yolo8m-worlddv2.pt
+yolo8s-worlddv2.pt
+.DS_Store
