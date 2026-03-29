@@ -83,9 +83,26 @@ except Exception:
     Table = None  # type: ignore[assignment]
 
 DEFAULT_DATASET_YAML = Path("dataset_ooh/accepted/dataset.yaml")
-DEFAULT_TRAIN_MODEL = "yolo11s.pt"
-FALLBACK_TRAIN_MODEL = "yolov8m.pt"
+DEFAULT_TRAIN_MODEL = "yolo11n.pt"
+FALLBACK_TRAIN_MODEL = "yolov8n.pt"
 DEFAULT_PRETRAINED_MODEL = Path("yolov8m-worldv2.pt")
+
+TRAIN_PROFILES = {
+    "lite": {
+        "epochs": 16,
+        "imgsz": 640,
+        "batch": 2,
+        "workers": 0,
+        "patience": 8,
+    },
+    "balanced": {
+        "epochs": 28,
+        "imgsz": 768,
+        "batch": 4,
+        "workers": 1,
+        "patience": 12,
+    },
+}
 
 
 def print_header(console: Console) -> None:
@@ -135,47 +152,101 @@ def ask_existing_path(console: Console, prompt_text: str, default_path: Path | N
         console.print(f"[red]Файл не найден:[/red] {path}")
 
 
-def choose_pretrained_model(console: Console) -> Path:
-    models = sorted(Path.cwd().glob("*.pt"))
-    world_models = [m for m in models if "world" in m.name.lower()]
+def list_local_pt_models() -> list[Path]:
+    return sorted(Path.cwd().glob("*.pt"))
 
+
+def choose_model_file(
+    console: Console,
+    title: str,
+    default_model: Path | str | None = None,
+) -> Path:
+    models = list_local_pt_models()
+
+    if models:
+        if RICH_AVAILABLE and Table is not None:
+            table = Table(title=title, header_style="bold green")
+            table.add_column("№", style="cyan", no_wrap=True)
+            table.add_column("File", style="white")
+            for idx, model in enumerate(models, start=1):
+                table.add_row(str(idx), str(model))
+            console.print(table)
+        else:
+            console.print(title)
+            for idx, model in enumerate(models, start=1):
+                console.print(f"{idx}. {model}")
+
+        use_local = Confirm.ask("Use a local .pt file from this list?", default=True)
+        if use_local:
+            while True:
+                raw_idx = Prompt.ask(f"Model number (1..{len(models)})", default="1").strip()
+                if raw_idx.isdigit():
+                    idx = int(raw_idx)
+                    if 1 <= idx <= len(models):
+                        return models[idx - 1]
+                console.print("[red]Enter a valid number.[/red]")
+
+    default_path = Path(default_model).expanduser() if default_model else None
+    return ask_existing_path(
+        console=console,
+        prompt_text="Path to model weights (.pt)",
+        default_path=default_path,
+    )
+
+
+def choose_pretrained_model(console: Console) -> Path:
+    models = list_local_pt_models()
+    world_models = [m for m in models if "world" in m.name.lower()]
     if world_models:
-        default_model = world_models[0]
-    elif DEFAULT_PRETRAINED_MODEL.exists():
-        default_model = DEFAULT_PRETRAINED_MODEL
+        default_model: Path | str = world_models[0]
     elif models:
         default_model = models[0]
     else:
         default_model = DEFAULT_PRETRAINED_MODEL
 
-    if models:
-        if RICH_AVAILABLE and Table is not None:
-            table = Table(title="Найденные веса в проекте", header_style="bold green")
-            table.add_column("№", style="cyan", no_wrap=True)
-            table.add_column("Файл", style="white")
-            for idx, model in enumerate(models, start=1):
-                table.add_row(str(idx), str(model))
-            console.print(table)
-        else:
-            console.print("Найденные веса в проекте:")
-            for idx, model in enumerate(models, start=1):
-                console.print(f"{idx}. {model}")
-
-    use_list = Confirm.ask("Выбрать из найденных .pt файлов?", default=True)
-    if use_list and models:
-        while True:
-            raw_idx = Prompt.ask(f"Номер модели (1..{len(models)})", default="1").strip()
-            if raw_idx.isdigit():
-                idx = int(raw_idx)
-                if 1 <= idx <= len(models):
-                    return models[idx - 1]
-            console.print("[red]Введите корректный номер.[/red]")
-
-    return ask_existing_path(
-        console,
-        "Путь к весам модели (.pt)",
-        default_path=default_model,
+    return choose_model_file(
+        console=console,
+        title="Local YOLO weights found in this project",
+        default_model=default_model,
     )
+
+
+def choose_training_model(console: Console) -> str:
+    models = list_local_pt_models()
+    preferred_local = None
+    for model in models:
+        if "world" not in model.name.lower():
+            preferred_local = model
+            break
+    if preferred_local is None and models:
+        preferred_local = models[0]
+
+    use_local = Confirm.ask(
+        "Use an already downloaded local model for training start?",
+        default=preferred_local is not None,
+    )
+    if use_local:
+        default_model: Path | str = preferred_local if preferred_local is not None else DEFAULT_TRAIN_MODEL
+        chosen = choose_model_file(
+            console=console,
+            title="Choose local base weights for training",
+            default_model=default_model,
+        )
+        return str(chosen)
+
+    return Prompt.ask(
+        "Base model name (will download if missing)",
+        default=DEFAULT_TRAIN_MODEL,
+    ).strip()
+
+
+def find_local_train_fallback_model() -> str | None:
+    for model in list_local_pt_models():
+        name = model.name.lower()
+        if "world" in name:
+            continue
+        return str(model)
+    return None
 
 
 def train_on_dataset(
@@ -185,6 +256,9 @@ def train_on_dataset(
     epochs: int,
     imgsz: int,
     device: str,
+    batch: int,
+    workers: int,
+    patience: int,
 ) -> Path:
     console.print("[info] Запуск обучения... это может занять время.")
 
@@ -199,15 +273,37 @@ def train_on_dataset(
         model_name = FALLBACK_TRAIN_MODEL
         model = YOLO(model_name)
 
-    model.train(
-        data=str(dataset_yaml),
-        epochs=epochs,
-        imgsz=imgsz,
-        device=device,
-        project=str(Path("runs") / "ooh_train"),
-        name="billboard",
-        exist_ok=False,
-    )
+    def run_train(current_model: YOLO) -> None:
+        current_model.train(
+            data=str(dataset_yaml),
+            epochs=epochs,
+            imgsz=imgsz,
+            batch=batch,
+            workers=workers,
+            patience=patience,
+            cache=False,
+            single_cls=True,
+            plots=False,
+            amp=False,
+            device=device,
+            project=str(Path("runs") / "ooh_train"),
+            name="billboard",
+            exist_ok=False,
+        )
+
+    try:
+        run_train(model)
+    except Exception as exc:
+        local_fallback = find_local_train_fallback_model()
+        fallback_model = local_fallback or FALLBACK_TRAIN_MODEL
+        if str(base_model) == str(fallback_model):
+            raise
+        console.print(
+            f"[yellow]Training with '{base_model}' failed: {exc}. "
+            f"Retrying with '{fallback_model}'.[/yellow]"
+        )
+        model = YOLO(fallback_model)
+        run_train(model)
 
     best_path: Path | None = None
     trainer = getattr(model, "trainer", None)
@@ -308,20 +404,40 @@ def main() -> int:
 
     mode = choose_mode(console)
 
-    device = Prompt.ask("Устройство для инференса/тренировки (cpu или 0)", default="cpu")
+    device = Prompt.ask("Device (cpu, mps, or 0)", default="cpu")
 
     if mode == "train":
         dataset_yaml = ask_existing_path(
             console,
-            "Путь к dataset.yaml",
+            "Path to dataset.yaml",
             default_path=DEFAULT_DATASET_YAML,
         )
-        base_model = Prompt.ask(
-            "Базовая модель для обучения (YOLO11/YOLO12/YOLOv8)",
-            default=DEFAULT_TRAIN_MODEL,
-        ).strip()
-        epochs = IntPrompt.ask("Epochs", default=40)
-        imgsz = IntPrompt.ask("Image size (imgsz)", default=960)
+
+        train_profile = Prompt.ask(
+            "Training profile",
+            choices=["lite", "balanced", "custom"],
+            default="lite",
+        )
+        if train_profile in TRAIN_PROFILES:
+            preset = TRAIN_PROFILES[train_profile]
+            epochs = int(preset["epochs"])
+            imgsz = int(preset["imgsz"])
+            batch = int(preset["batch"])
+            workers = int(preset["workers"])
+            patience = int(preset["patience"])
+        else:
+            epochs = IntPrompt.ask("Epochs", default=16)
+            imgsz = IntPrompt.ask("Image size (imgsz)", default=640)
+            batch = IntPrompt.ask("Batch size", default=2)
+            workers = IntPrompt.ask("Data loader workers", default=0)
+            patience = IntPrompt.ask("Patience", default=8)
+
+        console.print(
+            f"[info] Training config: epochs={epochs}, imgsz={imgsz}, "
+            f"batch={batch}, workers={workers}, patience={patience}"
+        )
+
+        base_model = choose_training_model(console)
 
         model_path = train_on_dataset(
             console=console,
@@ -330,14 +446,17 @@ def main() -> int:
             epochs=epochs,
             imgsz=imgsz,
             device=device,
+            batch=batch,
+            workers=workers,
+            patience=patience,
         )
     else:
         model_path = choose_pretrained_model(console)
-        imgsz = IntPrompt.ask("Image size (imgsz) для детекции", default=960)
+        imgsz = IntPrompt.ask("Image size (imgsz) for inference", default=960)
 
-    image_path = ask_existing_path(console, "Путь к изображению для детекции")
-    conf_accept = FloatPrompt.ask("Confidence порог (accept)", default=0.16)
-    conf_review = FloatPrompt.ask("Confidence порог (review)", default=0.08)
+    image_path = ask_existing_path(console, "Path to image for detection")
+    conf_accept = FloatPrompt.ask("Confidence threshold (accept)", default=0.16)
+    conf_review = FloatPrompt.ask("Confidence threshold (review)", default=0.08)
 
     preview_path = detect_on_image(
         console=console,
