@@ -82,10 +82,11 @@ except Exception:
     Panel = None  # type: ignore[assignment]
     Table = None  # type: ignore[assignment]
 
-DEFAULT_DATASET_YAML = Path("dataset_ooh/accepted/dataset.yaml")
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATASET_YAML = PROJECT_ROOT / "dataset_ooh/accepted/dataset.yaml"
 DEFAULT_TRAIN_MODEL = "yolo11n.pt"
 FALLBACK_TRAIN_MODEL = "yolov8n.pt"
-DEFAULT_PRETRAINED_MODEL = Path("yolov8m-worldv2.pt")
+DEFAULT_PRETRAINED_MODEL = PROJECT_ROOT / "yolov8m-worldv2.pt"
 
 TRAIN_PROFILES = {
     "lite": {
@@ -153,7 +154,7 @@ def ask_existing_path(console: Console, prompt_text: str, default_path: Path | N
 
 
 def list_local_pt_models() -> list[Path]:
-    return sorted(Path.cwd().glob("*.pt"))
+    return sorted(PROJECT_ROOT.glob("*.pt"))
 
 
 def choose_model_file(
@@ -261,6 +262,8 @@ def train_on_dataset(
     patience: int,
 ) -> Path:
     console.print("[info] Запуск обучения... это может занять время.")
+    train_project_dir = (PROJECT_ROOT / "runs" / "ooh_train").resolve()
+    train_project_dir.mkdir(parents=True, exist_ok=True)
 
     model_name = base_model
     try:
@@ -286,7 +289,7 @@ def train_on_dataset(
             plots=False,
             amp=False,
             device=device,
-            project=str(Path("runs") / "ooh_train"),
+            project=str(train_project_dir),
             name="billboard",
             exist_ok=False,
         )
@@ -314,7 +317,7 @@ def train_on_dataset(
 
     if best_path is None or not best_path.exists():
         # fallback: найти последний best.pt
-        candidates = sorted((Path("runs") / "ooh_train").glob("**/weights/best.pt"))
+        candidates = sorted(train_project_dir.glob("**/weights/best.pt"))
         if candidates:
             best_path = candidates[-1]
 

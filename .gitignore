@@ -8,3 +8,5 @@ yolo8_s_123/
 yolo8m-worldv2.pt
 yolo8s-worldv2.pt
 .DS_Store
+runs/
+yolo11n.pt
